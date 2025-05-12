@@ -1,4 +1,5 @@
 # -*- coding: UTF-8 -*-
+import os
 import re
 import time
 import pymongo
@@ -8,6 +9,7 @@ import subprocess
 import simplejson as json
 import datetime
 import tempfile
+import json5
 from bson.son import SON
 from bson import json_util
 from pymongo.errors import OperationFailure
@@ -353,7 +355,7 @@ class MongoEngine(EngineBase):
     ):
         # 提取公共参数
         common_params = {
-            "mongo": "mongo",
+            "mongo": self.mongo,
             "host": self.host,
             "port": self.port,
             "db_name": db_name,
@@ -382,6 +384,13 @@ class MongoEngine(EngineBase):
         else:
             common_params["auth_options"] = ""
         return cmd_template.format(**common_params)
+
+    def get_mongosh(self):
+        for client in ("mongosh", "mongo"):
+            if os.path.exists(f"/usr/bin/{client}"):
+                self.mongo = client
+                return
+            raise Exception("未找到MongoDB客户端")
 
     def get_master(self):
         """获得主节点的port和host"""
@@ -434,6 +443,7 @@ class MongoEngine(EngineBase):
 
     def execute(self, db_name=None, sql=""):
         """mongo命令执行语句"""
+        self.get_mongosh()
         self.get_master()
         execute_result = ReviewSet(full_sql=sql)
         sql = sql.strip()
@@ -479,7 +489,10 @@ class MongoEngine(EngineBase):
                         try:
                             r = json.loads(r)
                         except Exception as e:
-                            logger.info(str(e))
+                            try:
+                                r = json5.loads(re.search(r'[{\[].*[\]}]',r).group(0))
+                            except Exception as e:
+                                logger.warning(str(e))
                         finally:
                             methodStr = exec_sql.split(").")[-1].split("(")[0].strip()
                             if "." in methodStr:
@@ -807,28 +820,24 @@ class MongoEngine(EngineBase):
     def get_connection(self, db_name=None):
         self.db_name = db_name or self.instance.db_name or "admin"
         auth_db = self.instance.db_name or "admin"
-
-        options = {
-            "host": self.host,
-            "port": self.port,
-            "username": self.user,
-            "password": self.password,
-            "authSource": auth_db,
-            "connect": True,
-            "connectTimeoutMS": 10000,
-        }
-
-        # only set TLS options while the instance enabled the TLS, to avoid
-        # tlsInsecure option being set but the instance is not enabled the TLS
-        # which would cause pymongo.ConfigurationError
-        if self.instance.is_ssl:
-            options["tls"] = True
-            options["tlsInsecure"] = not self.instance.verify_ssl
-
         if self.user and self.password:
-            self.conn = pymongo.MongoClient(**options)
+            self.conn = pymongo.MongoClient(
+                self.host,
+                self.port,
+                username=self.user,
+                password=self.password,
+                authSource=auth_db,
+                connect=True,
+                connectTimeoutMS=10000,
+            )
         else:
-            self.conn = pymongo.MongoClient(**options)
+            self.conn = pymongo.MongoClient(
+                self.host,
+                self.port,
+                authSource=auth_db,
+                connect=True,
+                connectTimeoutMS=10000,
+            )
 
         return self.conn
 
